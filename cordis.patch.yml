@@ -1,0 +1,31 @@
+# Bundle layer for ben-dsh-crawl4ai.
+#
+# `dsh plugin --profile <name> add <path-or-package>` appends this package to
+# the profile's ordered bundle list, and this patch is applied in that order —
+# before the profile's own cordis.patch.yml, the home patch, and any --patch
+# overlay. Every value here is therefore overridable by a later layer.
+#
+# The inserted row keeps NO config of its own: the three settings a deployment
+# actually tunes (the Crawl4AI URL and the authenticating header's name and
+# value) are edited on the row's configuration page and persisted into the
+# active profile's patch.
+- insert:
+    - id: ben-crawl4ai
+      name: 'ben-dsh-crawl4ai'
+
+# Selecting this provider is REQUIRED, not politeness.
+#
+# Also mounted is `@deepseek-ai/dsh-web-fetch-http`, whose `available()` is
+# unconditionally true, so this package makes TWO usable fetch providers
+# exist. The seam auto-selects only when exactly one is usable and otherwise
+# fails every call with `WEB_PROVIDER_AMBIGUOUS`; naming the id is what makes
+# web_fetch deterministic.
+#
+# A patch replaces the targeted row's whole `config`, so this restates every
+# key it owns — `fetchProvider` is the only one it sets. If YOU also patch the
+# `web` row in a later layer (to pick a `searchProvider`, say), that layer
+# replaces this config wholesale: restate `fetchProvider: ben-crawl4ai` there,
+# or web_fetch falls back to the ambiguity above.
+- id: web
+  config:
+    fetchProvider: ben-crawl4ai

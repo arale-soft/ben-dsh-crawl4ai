@@ -1,0 +1,19 @@
+# This plugin is developed in place and installed into a profile as a `link:`
+# dependency, so node_modules/<name> inside the profile is a junction to this
+# directory. Node resolves import specifiers from a module's REAL path, so
+# anything this plugin imports as a bare specifier must be reachable from HERE
+# as well — the profile's own hoisted node_modules is not on the walk-up path
+# from this directory.
+#
+# Every runtime package this plugin imports is provided by the harness, so it is
+# declared in peerDependencies and linked in place rather than fetched:
+#
+#   node scripts/link-harness-deps.mjs
+#
+# That is also why `autoInstallPeers` is off: these peers live inside the
+# harness, not in a registry, and a second copy of them would be a different
+# module instance than the one the harness holds.
+packages:
+  - .
+
+autoInstallPeers: false
