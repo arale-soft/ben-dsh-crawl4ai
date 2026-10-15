@@ -22,7 +22,7 @@ Crawl4AI 会真正启动浏览器，所以普通 HTTP 抓取只能拿到一个�
 ## 安装
 
 ```bash
-dsh plugin --profile <配置档> add github:you/ben-dsh-crawl4ai   # 或绝对路径
+dsh plugin --profile <配置档> add github:arale-soft/ben-dsh-crawl4ai   # 或绝对路径
 ```
 
 本包声明了 `dsh.bundle`，所以安装的同时就已启用：它的 bundle patch 会插入提供方行，并在
