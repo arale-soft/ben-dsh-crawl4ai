@@ -24,7 +24,7 @@ English | [中文](README.zh.md)
 ## Install
 
 ```bash
-dsh plugin --profile <name> add github:you/ben-dsh-crawl4ai   # or an absolute path
+dsh plugin --profile <name> add github:arale-soft/ben-dsh-crawl4ai   # or an absolute path
 ```
 
 The package declares `dsh.bundle`, so the install also activates it: the bundle patch inserts
