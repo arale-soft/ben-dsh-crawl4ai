@@ -16,6 +16,15 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
+import {
+  CONTENT_SOURCES,
+  DEFAULT_CONTENT_SOURCE,
+  DEFAULT_FETCH_MODE,
+  DEFAULT_MD_FILTER,
+  FETCH_MODES,
+  MD_FILTERS,
+} from '../lib/crawl4ai.js'
+
 /** Every value export of the shipped client-ui-primitives 0.2.0-rc.2. */
 const PRIMITIVE_EXPORTS = [
   'Button',
@@ -23,10 +32,13 @@ const PRIMITIVE_EXPORTS = [
   'IconSettingsOutlineRegular',
   'Input',
   'MenuItemButton',
+  'SegmentedControl',
   'SettingsForm',
   'SettingsFormModel',
   'SettingsSecretField',
   'SettingsValueField',
+  'Switch',
+  'Tag',
   'modalSelector',
   'settingsNumberField',
   'settingsTextField',
@@ -36,7 +48,13 @@ const PRIMITIVE_EXPORTS = [
 const ALLOWED_MODULES = new Set(['react', '@deepseek-ai/dsh-client-ui-primitives'])
 
 /** Names in the stub whose `displayName` the assertions look for. */
-const COMPONENTS = new Set(['SettingsForm', 'SettingsValueField', 'SettingsSecretField'])
+const COMPONENTS = new Set([
+  'SegmentedControl',
+  'SettingsForm',
+  'SettingsSecretField',
+  'SettingsValueField',
+  'Switch',
+])
 
 /**
  * Build the `@deepseek-ai/dsh-client-ui-primitives` stub and record its use.
@@ -183,6 +201,10 @@ function pageState(overrides = {}) {
     crawl4aiUrl: { text: '', overridden: false, invalid: false },
     authHeaderName: { text: '', overridden: false, invalid: false },
     authHeaderValue: { text: '', overridden: false, invalid: false },
+    fetchMode: { text: DEFAULT_FETCH_MODE, overridden: false, invalid: false },
+    content_source: { text: DEFAULT_CONTENT_SOURCE, overridden: false, invalid: false },
+    only_text: { text: 'false', overridden: false, invalid: false },
+    f: { text: DEFAULT_MD_FILTER, overridden: false, invalid: false },
     ...overrides,
   }
 }
@@ -199,17 +221,27 @@ async function registered() {
   return { registration: context.registrations[0], context, seen, module }
 }
 
-/** Depth-first collect every element object in a rendered tree. */
+/**
+ * Depth-first collect every element object in a rendered tree.
+ *
+ * A card-defined component (`Crawl4aiChoiceField`, `Crawl4aiToggleField`) is a
+ * function element rather than a host element, so it is invoked and its result
+ * walked: React would do the same, and without this the primitives those
+ * components render would be invisible to every assertion below.
+ */
 function flatten(node, out = []) {
   if (node === null || node === undefined || typeof node !== 'object') return out
   if (Array.isArray(node)) {
     for (const child of node) flatten(child, out)
     return out
   }
-  if ('type' in node && 'props' in node) {
-    out.push(node)
-    flatten(node.props.children, out)
+  if (!('type' in node) || !('props' in node)) return out
+  out.push(node)
+  if (typeof node.type === 'function' && node.type.displayName?.startsWith('Crawl4ai')) {
+    flatten(node.type(node.props), out)
+    return out
   }
+  flatten(node.props.children, out)
   return out
 }
 
@@ -243,7 +275,7 @@ test('the zh and en dictionaries declare exactly the same keys', async () => {
   )
 })
 
-test('apply binds the row entry id, its three fields, and the keyed slot', async () => {
+test('apply binds the row entry id, every field, and the keyed slot', async () => {
   const { registration, context, seen } = await registered()
 
   assert.deepEqual(context.namespaces, ['ben-crawl4ai'], 'the settings namespace is the row entry id')
@@ -255,7 +287,9 @@ test('apply binds the row entry id, its three fields, and the keyed slot', async
 
   assert.deepEqual(
     seen.specs.map((spec) => spec.field),
-    ['crawl4aiUrl', 'authHeaderName', 'authHeaderValue'],
+    // Every config field is bound; the two limits stay off the page, so they
+    // are absent here while still living in the schema.
+    ['crawl4aiUrl', 'authHeaderName', 'authHeaderValue', 'fetchMode', 'content_source', 'only_text', 'f'],
   )
   assert.deepEqual(seen.secrets, [], 'no control writes outside the row section')
   assert.equal(seen.binds, 1)
@@ -323,6 +357,141 @@ test('the page view renders the URL, the header name, and the masked header valu
   assert.deepEqual(edits, [['authHeaderName', 'X-API-Key'], ['reset', 'crawl4aiUrl']])
 })
 
+test('the mode control offers every endpoint and reports the staged one', async () => {
+  const { registration } = await registered()
+  const edits = []
+  const tree = registration.component({
+    view: 'page',
+    t: (key) => key,
+    useCrawl4aiCard: (select) => select(pageState({
+      fetchMode: { text: FETCH_MODES.crawl, overridden: true, invalid: false },
+    })),
+    save: () => {},
+    discard: () => {},
+    edit: (field, text) => edits.push([field, text]),
+    resetField: (field) => edits.push(['reset', field]),
+  })
+
+  const [mode] = elementsOfType(tree, 'SegmentedControl')
+  assert.equal(mode.props.id, 'ben-crawl4ai-fetch-mode')
+  assert.equal(mode.props.value, FETCH_MODES.crawl)
+  assert.deepEqual(mode.props.options.map((option) => option.value), Object.values(FETCH_MODES))
+  assert.deepEqual(
+    mode.props.options.map((option) => option.label),
+    ['fetchMode.crawl_stream', 'fetchMode.crawl', 'fetchMode.md'],
+    'each segment is labelled through this page\'s dictionary',
+  )
+  mode.props.onChange(FETCH_MODES.md)
+  assert.deepEqual(edits, [['fetchMode', FETCH_MODES.md]])
+})
+
+test('the card offers only the selected mode\'s options', async () => {
+  const { registration } = await registered()
+  /**
+   * Render the page for one fetch mode.
+   * @param mode - the mode the section stages.
+   * @returns the rendered tree.
+   */
+  const render = (mode) => registration.component({
+    view: 'page',
+    t: (key) => key,
+    useCrawl4aiCard: (select) => select(pageState({ fetchMode: { text: mode, overridden: false, invalid: false } })),
+    save: () => {},
+    discard: () => {},
+    edit: () => {},
+    resetField: () => {},
+  })
+
+  for (const mode of [FETCH_MODES.crawlStream, FETCH_MODES.crawl]) {
+    const tree = render(mode)
+    const ids = elementsOfType(tree, 'SegmentedControl').map((node) => node.props.id)
+    // The two crawl endpoints share a body, so they share these two options.
+    assert.deepEqual(
+      ids,
+      ['ben-crawl4ai-fetch-mode', 'ben-crawl4ai-content-source'],
+      `${mode} offers content_source and no md filter`,
+    )
+    assert.deepEqual(
+      elementsOfType(tree, 'SegmentedControl')[1].props.options.map((option) => option.value),
+      [...CONTENT_SOURCES],
+    )
+    const [onlyText] = elementsOfType(tree, 'Switch')
+    assert.equal(onlyText.props.checked, false)
+    assert.equal(elementsOfType(tree, 'Switch').length, 1, 'only_text is the one toggle')
+  }
+
+  const mdTree = render(FETCH_MODES.md)
+  assert.deepEqual(
+    elementsOfType(mdTree, 'SegmentedControl').map((node) => node.props.id),
+    ['ben-crawl4ai-fetch-mode', 'ben-crawl4ai-md-filter'],
+    '/md offers its own filter and neither crawl option',
+  )
+  assert.deepEqual(
+    elementsOfType(mdTree, 'SegmentedControl')[1].props.options.map((option) => option.value),
+    [...MD_FILTERS],
+  )
+  assert.equal(elementsOfType(mdTree, 'Switch').length, 0, '/md ignores only_text')
+})
+
+test('the toggle and the choices stage their own field writes', async () => {
+  const { registration } = await registered()
+  const edits = []
+  const tree = registration.component({
+    view: 'page',
+    t: (key) => key,
+    useCrawl4aiCard: (select) => select(pageState({
+      content_source: { text: DEFAULT_CONTENT_SOURCE, overridden: true, invalid: false },
+      only_text: { text: 'false', overridden: false, invalid: false },
+    })),
+    save: () => {},
+    discard: () => {},
+    edit: (field, text) => edits.push([field, text]),
+    resetField: (field) => edits.push(['reset', field]),
+  })
+
+  const [, contentSource] = elementsOfType(tree, 'SegmentedControl')
+  contentSource.props.onChange('raw_html')
+  assert.deepEqual(edits, [['content_source', 'raw_html']])
+
+  const [onlyText] = elementsOfType(tree, 'Switch')
+  onlyText.props.onChange(true)
+  // The form model stages text, so a boolean is carried as its own literal.
+  assert.deepEqual(edits[1], ['only_text', 'true'])
+})
+
+test('the card falls back to the default mode when the section carries none', async () => {
+  const { registration } = await registered()
+  const tree = registration.component({
+    view: 'page',
+    t: (key) => key,
+    // An unresolved or unrecognized mode must still leave the page showing a
+    // mode whose options are on screen.
+    useCrawl4aiCard: (select) => select(pageState({ fetchMode: { text: undefined, overridden: false, invalid: false } })),
+    save: () => {},
+    discard: () => {},
+    edit: () => {},
+    resetField: () => {},
+  })
+  const [mode] = elementsOfType(tree, 'SegmentedControl')
+  assert.equal(mode.props.value, DEFAULT_FETCH_MODE)
+  assert.deepEqual(
+    elementsOfType(tree, 'SegmentedControl').map((node) => node.props.id),
+    ['ben-crawl4ai-fetch-mode', 'ben-crawl4ai-content-source'],
+  )
+})
+
+test('the client option lists stay in step with the host schema', async () => {
+  const { module } = await loadBundle()
+  // The browser half cannot import the host half, so it repeats these lists;
+  // this pins the repetition so a choice added on one side alone fails here.
+  assert.deepEqual([...module.FETCH_MODE_VALUES], Object.values(FETCH_MODES))
+  assert.deepEqual([...module.CONTENT_SOURCE_VALUES], [...CONTENT_SOURCES])
+  assert.deepEqual([...module.MD_FILTER_VALUES], [...MD_FILTERS])
+  assert.equal(module.DEFAULT_FETCH_MODE, DEFAULT_FETCH_MODE)
+  assert.equal(module.DEFAULT_CONTENT_SOURCE, DEFAULT_CONTENT_SOURCE)
+  assert.equal(module.DEFAULT_MD_FILTER, DEFAULT_MD_FILTER)
+})
+
 test('the masked control reports a configured header value and stays editable', async () => {
   const { registration } = await registered()
   const tree = registration.component({
@@ -355,6 +524,28 @@ test('a read-only deployment disables every control', async () => {
     resetField: () => {},
   })
   const controls = flatten(tree).filter((node) => node.props?.disabled !== undefined)
-  assert.equal(controls.length, 3)
+  // Nothing that can change a value may stay enabled on a read-only document:
+  // the two text fields, the masked field, the mode control, and the two
+  // controls of the selected mode. The card's own field wrappers carry the same
+  // flag, so every flagged element — control or wrapper — is checked.
+  assert.ok(controls.length > 0)
   assert.ok(controls.every((node) => node.props.disabled === true))
+
+  const primitiveControls = flatten(tree).filter((node) => [
+    'SegmentedControl',
+    'SettingsSecretField',
+    'SettingsValueField',
+    'Switch',
+  ].includes(node.type?.displayName))
+  assert.deepEqual(
+    primitiveControls.map((node) => node.type.displayName),
+    [
+      'SettingsValueField',
+      'SettingsValueField',
+      'SettingsSecretField',
+      'SegmentedControl',
+      'SegmentedControl',
+      'Switch',
+    ],
+  )
 })

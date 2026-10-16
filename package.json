@@ -31,7 +31,7 @@
   ],
   "scripts": {
     "link-harness-deps": "node scripts/link-harness-deps.mjs",
-    "test": "node --test test/crawl4ai.test.mjs"
+    "test": "node --test test/crawl4ai.test.mjs test/config.test.mjs test/client.test.mjs"
   },
   "license": "MIT",
   "dsh": {

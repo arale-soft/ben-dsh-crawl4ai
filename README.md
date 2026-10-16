@@ -62,6 +62,7 @@ stages what you type and writes only on **Save**, through the shell's own settin
 | **Crawl4AI URL** | Server root, e.g. `http://crawl4ai.internal:11235`. Unset or not `http(s)` makes the provider report unavailable, and `web_fetch` says so instead of failing every call. |
 | **Auth header name** | e.g. `Authorization` or `X-API-Key`. Blank sends no authenticating header. |
 | **Auth header value** | Sent as that header's value. Rendered masked; **blank sends no authenticating header** — the name and the value take effect together. |
+| **Fetch mode** | Which endpoint one fetch uses: `/crawl/stream`, `/crawl`, or `/md`. Defaults to `/crawl/stream`. |
 
 Both header fields are independent, so a deployment can use any header name or none at all.
 
@@ -79,6 +80,39 @@ concerns, edited in YAML instead:
 A patch row **replaces the targeted row's whole `config`**, so restate every key you want to
 keep.
 
+### Fetch modes and their options
+
+The three modes are not interchangeable, and each one carries its own options. The page shows
+**only the options the selected mode uses**; the others keep their values in the section, so
+switching back and forth does not discard a choice.
+
+| Mode | Endpoint | Options |
+|---|---|---|
+| `crawl_stream` (default) | `POST /crawl/stream` | `content_source`, `only_text` |
+| `crawl` | `POST /crawl` | `content_source`, `only_text` |
+| `md` | `POST /md` | `f` |
+
+`content_source` and `only_text` configure
+[`CrawlerRunConfig`](https://docs.crawl4ai.com/api/parameters/) and therefore apply to both crawl
+endpoints. `content_source` is **not** a `CrawlerRunConfig` field — it belongs to the Markdown
+generator, so it is sent nested as
+`crawler_config.markdown_generator = {"type": "DefaultMarkdownGenerator", "params": {"content_source": …}}`.
+Sending it as a top-level key would be silently dropped by the server's own field allowlist.
+
+| Key | Choices | Default | Meaning |
+|---|---|---|---|
+| `fetchMode` | `crawl_stream`, `crawl`, `md` | `crawl_stream` | Endpoint selection. |
+| `content_source` | `cleaned_html`, `raw_html`, `fit_html` | `cleaned_html` | The HTML the Markdown is generated from. |
+| `only_text` | `true`, `false` | `false` | Extract text-only content. |
+| `f` | `fit`, `raw` | `fit` | The content filter `/md` applies. Crawl4AI also serves `bm25` and `llm`, which this plugin does not offer because they need a query or an LLM configuration this seam's request shape has nowhere to put. |
+
+Both crawl endpoints report the target's own status code and its final URL; `/md` reports
+neither, which is the main reason to prefer them.
+
+Every default equals Crawl4AI's own, so an unset field is a no-op rather than an error. An
+unrecognized value — a hand-edited patch can hold a typo — falls back to that default instead of
+being forwarded, so a request never asks for something the server would reject.
+
 ## Provider selection is required
 
 The bundle patch sets `web.fetchProvider: ben-crawl4ai`, and that is not politeness:
@@ -92,15 +126,27 @@ every bundle layer — so if you also pin `searchProvider` on the `web` row, res
 
 ## The server contract
 
-One fetch is `POST <base>/crawl` with `{"urls": ["<url>"]}` and the configured header. The
-response is Crawl4AI's `{ success, results: [ … ] }`, and the first result supplies the final URL
-(`redirected_url` over `url`), the target's own `status_code`, and its `markdown` object, from
-which `fit_markdown` is preferred and an **empty** `fit_markdown` falls through to
-`raw_markdown` (the server returns `fit_markdown: ""` unless a fit filter was requested).
+One fetch is `POST <base>/<endpoint>` with the configured header, where the endpoint is the one
+the row selected. The two crawl endpoints share a body — `{"urls": ["<url>"], "crawler_config":
+{…}}` — while `/md` takes `{"url": "<url>", "f": "<filter>"}` and no crawler config at all.
 
-A server that does not serve `/crawl` (an older build, or a proxy that exposes only part of the
-API) answers 404/405 and is retried once against `/md`, which returns the same content without
-the target's status or final URL.
+- **`/crawl/stream`** answers NDJSON: one serialized `CrawlResult` per line, terminated by a
+  `{"status": "completed"}` marker. The body is read whole and parsed line by line rather than as
+  one JSON document. A failure that happens *after* the stream opened arrives in band as a
+  `{"status": "error", …}` line rather than as an HTTP status, and is reported as the crawl
+  failure it is.
+- **`/crawl`** answers `{ success, results: [ … ] }`, and the first result supplies the final URL
+  (`redirected_url` over `url`), the target's own `status_code`, and its `markdown` object, from
+  which `fit_markdown` is preferred and an **empty** `fit_markdown` falls through to
+  `raw_markdown` (the server returns `fit_markdown: ""` unless a fit filter was requested).
+- **`/md`** answers `{ url, filter, markdown, success }` for the `f` it was given. It reports no
+  target status, so a successful conversion is a 200 by construction.
+
+There is **no fallback between endpoints**: the failure of the one you chose is reported as
+itself, with its own HTTP status. A silent retry would answer from a different endpoint than the
+person selected, which is worst where the endpoints differ — `/md` reports no target status, so
+falling back to it turns a page the server could not retrieve into a success, and it ignores
+`content_source` and `only_text` entirely.
 
 A **non-2xx target page is a result, not an error** — the status is part of the fetched
 resource, so it is returned with whatever body Crawl4AI extracted. A throw is reserved for
@@ -123,13 +169,17 @@ Failures are `WebError`s the tool layer renders in a tool result.
 ## Tests
 
 ```bash
-node --test test/crawl4ai.test.mjs test/client.test.mjs   # offline
+node --test test/crawl4ai.test.mjs test/config.test.mjs test/client.test.mjs   # offline
 ```
 
-`crawl4ai.test.mjs` covers the HTTP contract and mapping against a stubbed `fetch`.
+`crawl4ai.test.mjs` covers the HTTP contract and mapping against a stubbed `fetch`, for all three
+endpoints. `config.test.mjs` covers the schema: that every field is volatile, that each choice is
+accepted and an unknown one refused, and that an unset field resolves to Crawl4AI's own default.
 `client.test.mjs` evaluates the browser bundle with the module loader stubbed, so a stray
 `@deepseek-ai/*` import, an unknown primitive name, or a slot key that does not match the
-inserted row fails the suite instead of breaking the Web UI.
+inserted row fails the suite instead of breaking the Web UI. It also pins the browser half's
+option lists to the host schema's, which is what keeps a choice added on one side alone from
+shipping.
 
 Two suites need a live server and skip without one:
 
@@ -138,23 +188,30 @@ $env:CRAWL4AI_URL='https://ca.example:1443'
 $env:CRAWL4AI_AUTH_HEADER_NAME='Authorization'
 $env:CRAWL4AI_AUTH_HEADER_VALUE='Bearer …'
 node --test test/seam.test.mjs          # registers into the REAL ctx.web and fetches
-node --test test/crawl4ai.test.mjs      # includes a live crawl
+node --test test/crawl4ai.test.mjs      # includes a live crawl in every fetch mode
 ```
 
 `seam.test.mjs` is the end-to-end one: it mounts `@deepseek-ai/dsh-web`, applies this plugin, and
 dispatches a fetch through the seam, covering selection by id, the unavailable gate, and that a
-volatile row edit reaches the very next call.
+volatile row edit — including a change of fetch mode — reaches the very next call.
+
+The offline suites need `@deepseek-ai/schemastery` (and its own `cosmokit` dependency) resolvable
+from this directory, which `node scripts/link-harness-deps.mjs` provides. `config.test.mjs`
+skips itself rather than failing when that has not been run.
 
 ## Known limitations
 
 - **Markdown only.** The seam's body kinds are `html` and `text`; this provider always returns
   `text`, so `dsh-tool-web`'s HTML-to-Markdown step is skipped rather than applied twice.
-- **No crawl tuning.** `crawler_config` is not exposed: scan depth, caching, filters, and
-  screenshots are Crawl4AI features this seam's request shape has nowhere to put.
+- **A small slice of `crawler_config`.** Only `content_source` and `only_text` are exposed; scan
+  depth, caching, other filters, and screenshots are Crawl4AI features this seam's request shape
+  has nowhere to put.
 - **The Crawl4AI server holds the page cache.** `cache` is left at its default, so a repeat fetch
   may answer from the server's cache.
-- **`/md` loses the target's status.** On the fallback path a successful conversion is reported
-  as HTTP 200 by construction.
+- **`/md` loses the target's status.** On that mode a successful conversion is reported as
+  HTTP 200 by construction.
+- **No endpoint fallback.** Selecting an endpoint is a commitment: a server that does not serve
+  it reports its own 404/405 instead of the plugin quietly fetching another way.
 
 ## License
 

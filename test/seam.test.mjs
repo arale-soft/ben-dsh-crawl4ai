@@ -108,6 +108,10 @@ test('a volatile row edit reaches the very next fetch', async (t) => {
     crawl4aiUrl: reference(() => current.crawl4aiUrl),
     authHeaderName: reference(() => current.authHeaderName),
     authHeaderValue: reference(() => current.authHeaderValue),
+    fetchMode: reference(() => current.fetchMode),
+    content_source: reference(() => current.content_source),
+    only_text: reference(() => current.only_text),
+    f: reference(() => current.f),
     timeoutMs: reference(() => current.timeoutMs),
     maxContentChars: reference(() => current.maxContentChars),
   }
@@ -119,8 +123,19 @@ test('a volatile row edit reaches the very next fetch', async (t) => {
     crawl4aiUrl: BASE_URL,
     authHeaderName: process.env.CRAWL4AI_AUTH_HEADER_NAME,
     authHeaderValue: process.env.CRAWL4AI_AUTH_HEADER_VALUE,
+    fetchMode: 'crawl_stream',
+    content_source: 'cleaned_html',
+    only_text: false,
+    f: 'fit',
   }
   const result = await ctx.web.fetch({ url: TARGET })
   assert.equal(result.statusCode, 200)
   assert.ok(result.body.content.length > 0)
+
+  // A second edit reaches the NEXT fetch without moving the registration, and
+  // switching to `/md` changes which endpoint answers.
+  current = { ...current, fetchMode: 'md' }
+  const viaMarkdown = await ctx.web.fetch({ url: TARGET })
+  assert.equal(viaMarkdown.body.kind, 'text')
+  assert.ok(viaMarkdown.body.content.length > 0)
 })
