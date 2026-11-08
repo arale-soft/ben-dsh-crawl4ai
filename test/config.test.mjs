@@ -22,9 +22,11 @@ import {
   DEFAULT_MAX_CONTENT_CHARS,
   DEFAULT_MD_FILTER,
   DEFAULT_ONLY_TEXT,
+  DEFAULT_OUTPUT_FORMAT,
   DEFAULT_TIMEOUT_MS,
   FETCH_MODES,
   MD_FILTERS,
+  OUTPUT_FORMATS,
 } from '../lib/crawl4ai.js'
 
 /** The config module, or `undefined` when schemastery is not reachable. */
@@ -41,7 +43,7 @@ test('the schema declares every config key and nothing else', { skip: config ===
   // YAML, so they are declared even though no card control edits them.
   assert.ok(CONFIG_KEYS.includes('timeoutMs'))
   assert.ok(CONFIG_KEYS.includes('maxContentChars'))
-  for (const key of ['fetchMode', 'content_source', 'only_text', 'f']) {
+  for (const key of ['fetchMode', 'content_source', 'only_text', 'output_format', 'f']) {
     assert.ok(CONFIG_KEYS.includes(key), `${key} must be part of the section`)
   }
 })
@@ -63,6 +65,7 @@ test('the schema accepts each documented choice and refuses anything else', { sk
   const choices = {
     fetchMode: Object.values(FETCH_MODES),
     content_source: [...CONTENT_SOURCES],
+    output_format: Object.values(OUTPUT_FORMATS),
     f: [...MD_FILTERS],
   }
   for (const [field, values] of Object.entries(choices)) {
@@ -86,6 +89,8 @@ test('an unset field resolves to Crawl4AI\'s own default', { skip: config === un
   assert.equal(options.content_source, 'cleaned_html')
   assert.equal(options.only_text, DEFAULT_ONLY_TEXT)
   assert.equal(options.only_text, false)
+  assert.equal(options.output_format, DEFAULT_OUTPUT_FORMAT)
+  assert.equal(options.output_format, 'markdown')
   assert.equal(options.f, DEFAULT_MD_FILTER)
   assert.equal(options.f, 'fit')
   assert.equal(options.timeoutMs, DEFAULT_TIMEOUT_MS)
@@ -101,6 +106,7 @@ test('resolveOptions carries the configured values and the auth header', { skip:
     fetchMode: 'md',
     content_source: 'raw_html',
     only_text: true,
+    output_format: 'html',
     f: 'raw',
     timeoutMs: 1_000,
     maxContentChars: 50,
@@ -112,6 +118,7 @@ test('resolveOptions carries the configured values and the auth header', { skip:
     fetchMode: 'md',
     content_source: 'raw_html',
     only_text: true,
+    output_format: 'html',
     f: 'raw',
     timeoutMs: 1_000,
     maxContentChars: 50,

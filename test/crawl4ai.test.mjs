@@ -21,8 +21,10 @@ import {
   DEFAULT_FETCH_MODE,
   DEFAULT_MD_FILTER,
   DEFAULT_ONLY_TEXT,
+  DEFAULT_OUTPUT_FORMAT,
   FETCH_MODES,
   MD_FILTERS,
+  OUTPUT_FORMATS,
   assertFetchableURL,
   buildCrawlerConfig,
   buildHeaders,
@@ -39,6 +41,8 @@ import {
   resolveFetchMode,
   resolveMdFilter,
   resolveOnlyText,
+  resolveOutputFormat,
+  selectHtml,
   selectMarkdown,
 } from '../lib/crawl4ai.js'
 
@@ -78,6 +82,8 @@ function crawlBody(overrides = {}) {
       url: 'https://example.com',
       status_code: 200,
       success: true,
+      html: '<html><body><main><h1>Title</h1><p>Body</p></main></body></html>',
+      cleaned_html: '<main><h1>Title</h1><p>Body</p></main>',
       markdown: { raw_markdown: '# Title\n\nBody', fit_markdown: '' },
       ...overrides,
     }],
@@ -162,6 +168,9 @@ test('the option resolvers keep an accepted value and fall back on anything else
   assert.equal(resolveContentSource('bogus'), DEFAULT_CONTENT_SOURCE)
   assert.equal(resolveMdFilter('raw'), 'raw')
   assert.equal(resolveMdFilter('bm25'), DEFAULT_MD_FILTER)
+  assert.equal(resolveOutputFormat('html'), 'html')
+  assert.equal(resolveOutputFormat('markdown'), 'markdown')
+  assert.equal(resolveOutputFormat('bogus'), DEFAULT_OUTPUT_FORMAT)
   // `"false"` is a truthy string, so it must not be forwarded as a flag.
   assert.equal(resolveOnlyText(true), true)
   assert.equal(resolveOnlyText(false), false)
@@ -215,10 +224,12 @@ test('the option constants agree with the Crawl4AI values they name', () => {
   assert.deepEqual(Object.values(FETCH_MODES), ['crawl_stream', 'crawl', 'md'])
   assert.deepEqual([...CONTENT_SOURCES], ['cleaned_html', 'raw_html', 'fit_html'])
   assert.deepEqual([...MD_FILTERS], ['fit', 'raw'])
+  assert.deepEqual(Object.values(OUTPUT_FORMATS), ['markdown', 'html'])
   assert.equal(DEFAULT_FETCH_MODE, 'crawl_stream')
   assert.equal(DEFAULT_CONTENT_SOURCE, 'cleaned_html')
   assert.equal(DEFAULT_MD_FILTER, 'fit')
   assert.equal(DEFAULT_ONLY_TEXT, false)
+  assert.equal(DEFAULT_OUTPUT_FORMAT, 'markdown')
 })
 
 test('parseStreamBody reads one record per line and skips the blank ones', () => {
@@ -327,7 +338,11 @@ test('mapCrawlResponse throws only when no page could be retrieved', () => {
     assert.match(error.message, /browser crashed/)
     return true
   })
-  assert.throws(() => mapCrawlResponse(crawlBody({ markdown: {} }), 'https://example.com', 1_000), (error) => {
+  assert.throws(() => mapCrawlResponse(
+    crawlBody({ markdown: {}, cleaned_html: '', html: '' }),
+    'https://example.com',
+    1_000,
+  ), (error) => {
     assert.match(error.message, /no content/)
     return true
   })
@@ -340,6 +355,78 @@ test('mapCrawlResponse falls back to cleaned HTML when no Markdown was produced'
     1_000,
   )
   assert.equal(result.body.content, '<p>hi</p>')
+})
+
+test('selectHtml prefers cleaned_html, then html, and never fit_html', () => {
+  assert.equal(selectHtml({ cleaned_html: '<p>clean</p>', html: '<p>raw</p>' }), '<p>clean</p>')
+  // A cleaned_html the server did not keep falls through to the original DOM.
+  assert.equal(selectHtml({ cleaned_html: '', html: '<p>raw</p>' }), '<p>raw</p>')
+  assert.equal(selectHtml({ cleaned_html: '  ', fit_html: '<p>fit</p>' }), undefined)
+  assert.equal(selectHtml({}), undefined)
+  assert.equal(selectHtml(undefined), undefined)
+})
+
+test('the output format selects which rendering of the same result is returned', () => {
+  // A crawl result carries the page BOTH ways, so this is a projection of the
+  // answer and never a request field. Both readings of the same body:
+  const asMarkdown = mapCrawlResponse(crawlBody(), 'https://example.com', 1_000)
+  assert.equal(asMarkdown.body.content, '# Title\n\nBody')
+
+  const asHtml = mapCrawlResponse(crawlBody(), 'https://example.com', 1_000, OUTPUT_FORMATS.html)
+  assert.equal(asHtml.body.content, '<main><h1>Title</h1><p>Body</p></main>')
+  // The seam's body kinds are html and text; `text` is what keeps the model
+  // from having the HTML converted again by the tool layer.
+  assert.equal(asHtml.body.kind, 'text')
+
+  // The default is unchanged, so an unset field keeps the old behaviour.
+  assert.equal(DEFAULT_OUTPUT_FORMAT, 'markdown')
+  assert.equal(mapCrawlResponse(crawlBody(), 'https://example.com', 1_000, undefined).body.content, '# Title\n\nBody')
+  assert.equal(mapCrawlResponse(crawlBody(), 'https://example.com', 1_000, 'nonsense').body.content, '# Title\n\nBody')
+})
+
+test('each output format falls back to the other rather than failing', () => {
+  // `only_text` keeps a Markdown without HTML, and a server may keep HTML
+  // without producing Markdown: either way the page WAS retrieved, so the
+  // format that is missing must not turn a success into an error.
+  const textOnly = mapCrawlResponse(
+    crawlBody({ markdown: { raw_markdown: 'just text' }, cleaned_html: '', html: '' }),
+    'https://example.com',
+    1_000,
+    OUTPUT_FORMATS.html,
+  )
+  assert.equal(textOnly.body.content, 'just text')
+
+  const htmlOnly = mapCrawlResponse(
+    crawlBody({ markdown: {}, cleaned_html: '<p>html only</p>' }),
+    'https://example.com',
+    1_000,
+    OUTPUT_FORMATS.markdown,
+  )
+  assert.equal(htmlOnly.body.content, '<p>html only</p>')
+})
+
+test('the streamed and non-streamed endpoints both honour the output format', () => {
+  const streamed = mapStreamResponse(streamRecords(), 'https://example.com', 1_000, OUTPUT_FORMATS.html)
+  assert.equal(streamed.body.content, '<main><h1>Title</h1><p>Body</p></main>')
+  const buffered = mapCrawlResponse(crawlBody(), 'https://example.com', 1_000, OUTPUT_FORMATS.html)
+  assert.deepEqual(streamed.body, buffered.body)
+})
+
+test('/md carries no HTML, so the output format cannot apply to it', async () => {
+  let body
+  const fetchImpl = async (_endpoint, init) => {
+    body = JSON.parse(init.body)
+    return jsonResponse(200, { url: 'https://example.com', markdown: '# Via md', success: true })
+  }
+  const result = await crawl(
+    { ...BASE_OPTIONS, fetchMode: FETCH_MODES.md, output_format: 'html', url: 'https://example.com' },
+    undefined,
+    fetchImpl,
+  )
+  // The format is a projection of the answer, not a request field, so asking
+  // for HTML changes nothing the endpoint is sent — and nothing it answers.
+  assert.deepEqual(body, { url: 'https://example.com/', f: DEFAULT_MD_FILTER })
+  assert.equal(result.body.content, '# Via md')
 })
 
 test('mapMarkdownResponse maps the /md shape', () => {
@@ -410,11 +497,16 @@ test('crawl sends the crawl options on both crawl endpoints and the filter on /m
     url: 'https://example.com',
     content_source: 'fit_html',
     only_text: true,
+    output_format: 'html',
     f: 'raw',
   }
   await crawl({ ...options, fetchMode: FETCH_MODES.crawlStream }, undefined, fetchImpl)
   assert.equal(bodies[0].crawler_config.only_text, true)
   assert.equal(bodies[0].crawler_config.markdown_generator.params.content_source, 'fit_html')
+  // `output_format` is this plugin's own projection, not a CrawlerRunConfig
+  // field, so it must never appear in what the server is sent.
+  assert.equal('output_format' in bodies[0].crawler_config, false)
+  assert.equal('output_format' in bodies[0], false)
 
   await crawl({ ...options, fetchMode: FETCH_MODES.crawl }, undefined, async (_endpoint, init) => {
     bodies.push(JSON.parse(init.body))
@@ -422,6 +514,7 @@ test('crawl sends the crawl options on both crawl endpoints and the filter on /m
   })
   assert.equal(bodies[1].crawler_config.only_text, true)
   assert.equal(bodies[1].crawler_config.markdown_generator.params.content_source, 'fit_html')
+  assert.equal('output_format' in bodies[1].crawler_config, false)
 })
 
 test('crawl reports the chosen endpoint\'s own 404 rather than falling back', async () => {
@@ -530,6 +623,14 @@ test('live: crawls a real page through CRAWL4AI_URL in every fetch mode', async 
     // prove the target's own status survived the round trip.
     if (mode !== FETCH_MODES.md) assert.equal(result.statusCode, 200, `${mode} should report the target status`)
     assert.equal(result.body.kind, 'text', `${mode} should return text`)
-    assert.ok(result.body.content.length > 0, `expected non-empty Markdown from ${mode}`)
+    assert.ok(result.body.content.length > 0, `expected non-empty content from ${mode}`)
+  }
+
+  // Both crawl endpoints answer with the page both ways, so the HTML projection
+  // is what a real server proves the plugin can hand back.
+  for (const mode of [FETCH_MODES.crawlStream, FETCH_MODES.crawl]) {
+    const result = await crawl({ ...common, fetchMode: mode, output_format: 'html' })
+    assert.equal(result.body.kind, 'text')
+    assert.match(result.body.content, /<[a-z!]/i, `${mode} should return HTML markup`)
   }
 })

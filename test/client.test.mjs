@@ -21,8 +21,10 @@ import {
   DEFAULT_CONTENT_SOURCE,
   DEFAULT_FETCH_MODE,
   DEFAULT_MD_FILTER,
+  DEFAULT_OUTPUT_FORMAT,
   FETCH_MODES,
   MD_FILTERS,
+  OUTPUT_FORMATS,
 } from '../lib/crawl4ai.js'
 
 /** Every value export of the shipped client-ui-primitives 0.2.0-rc.2. */
@@ -204,6 +206,7 @@ function pageState(overrides = {}) {
     fetchMode: { text: DEFAULT_FETCH_MODE, overridden: false, invalid: false },
     content_source: { text: DEFAULT_CONTENT_SOURCE, overridden: false, invalid: false },
     only_text: { text: 'false', overridden: false, invalid: false },
+    output_format: { text: DEFAULT_OUTPUT_FORMAT, overridden: false, invalid: false },
     f: { text: DEFAULT_MD_FILTER, overridden: false, invalid: false },
     ...overrides,
   }
@@ -289,7 +292,7 @@ test('apply binds the row entry id, every field, and the keyed slot', async () =
     seen.specs.map((spec) => spec.field),
     // Every config field is bound; the two limits stay off the page, so they
     // are absent here while still living in the schema.
-    ['crawl4aiUrl', 'authHeaderName', 'authHeaderValue', 'fetchMode', 'content_source', 'only_text', 'f'],
+    ['crawl4aiUrl', 'authHeaderName', 'authHeaderValue', 'fetchMode', 'content_source', 'only_text', 'output_format', 'f'],
   )
   assert.deepEqual(seen.secrets, [], 'no control writes outside the row section')
   assert.equal(seen.binds, 1)
@@ -405,15 +408,19 @@ test('the card offers only the selected mode\'s options', async () => {
   for (const mode of [FETCH_MODES.crawlStream, FETCH_MODES.crawl]) {
     const tree = render(mode)
     const ids = elementsOfType(tree, 'SegmentedControl').map((node) => node.props.id)
-    // The two crawl endpoints share a body, so they share these two options.
+    // The two crawl endpoints share a body, so they share these three options.
     assert.deepEqual(
       ids,
-      ['ben-crawl4ai-fetch-mode', 'ben-crawl4ai-content-source'],
-      `${mode} offers content_source and no md filter`,
+      ['ben-crawl4ai-fetch-mode', 'ben-crawl4ai-content-source', 'ben-crawl4ai-output-format'],
+      `${mode} offers content_source and output_format, and no md filter`,
     )
     assert.deepEqual(
       elementsOfType(tree, 'SegmentedControl')[1].props.options.map((option) => option.value),
       [...CONTENT_SOURCES],
+    )
+    assert.deepEqual(
+      elementsOfType(tree, 'SegmentedControl')[2].props.options.map((option) => option.value),
+      Object.values(OUTPUT_FORMATS),
     )
     const [onlyText] = elementsOfType(tree, 'Switch')
     assert.equal(onlyText.props.checked, false)
@@ -476,7 +483,7 @@ test('the card falls back to the default mode when the section carries none', as
   assert.equal(mode.props.value, DEFAULT_FETCH_MODE)
   assert.deepEqual(
     elementsOfType(tree, 'SegmentedControl').map((node) => node.props.id),
-    ['ben-crawl4ai-fetch-mode', 'ben-crawl4ai-content-source'],
+    ['ben-crawl4ai-fetch-mode', 'ben-crawl4ai-content-source', 'ben-crawl4ai-output-format'],
   )
 })
 
@@ -486,9 +493,11 @@ test('the client option lists stay in step with the host schema', async () => {
   // this pins the repetition so a choice added on one side alone fails here.
   assert.deepEqual([...module.FETCH_MODE_VALUES], Object.values(FETCH_MODES))
   assert.deepEqual([...module.CONTENT_SOURCE_VALUES], [...CONTENT_SOURCES])
+  assert.deepEqual([...module.OUTPUT_FORMAT_VALUES], Object.values(OUTPUT_FORMATS))
   assert.deepEqual([...module.MD_FILTER_VALUES], [...MD_FILTERS])
   assert.equal(module.DEFAULT_FETCH_MODE, DEFAULT_FETCH_MODE)
   assert.equal(module.DEFAULT_CONTENT_SOURCE, DEFAULT_CONTENT_SOURCE)
+  assert.equal(module.DEFAULT_OUTPUT_FORMAT, DEFAULT_OUTPUT_FORMAT)
   assert.equal(module.DEFAULT_MD_FILTER, DEFAULT_MD_FILTER)
 })
 
@@ -546,6 +555,7 @@ test('a read-only deployment disables every control', async () => {
       'SegmentedControl',
       'SegmentedControl',
       'Switch',
+      'SegmentedControl',
     ],
   )
 })

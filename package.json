@@ -1,7 +1,7 @@
 {
   "name": "ben-dsh-crawl4ai",
   "version": "0.1.0",
-  "description": "Crawl4AI-backed web fetch provider for DeepSeek Harness — web_fetch renders JavaScript-heavy pages through your own Crawl4AI server and returns clean Markdown.",
+  "description": "Crawl4AI-backed web fetch provider for DeepSeek Harness — web_fetch renders JavaScript-heavy pages through your own Crawl4AI server and returns clean Markdown, or the cleaned HTML on request.",
   "keywords": [
     "deepseek",
     "deepseek-harness",

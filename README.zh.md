@@ -4,7 +4,8 @@
 注册到 web 能力接缝 `ctx.web`。
 
 Crawl4AI 会真正启动浏览器，所以普通 HTTP 抓取只能拿到一个空的 `<div id="app">` 的页面，
-在这里会变成渲染后的 Markdown —— 包括只有 JavaScript 执行后才存在的代码块、表格和懒加载正文。
+在这里会变成渲染后的内容 —— 包括只有 JavaScript 执行后才存在的代码块、表格和懒加载正文。
+默认返回 Markdown；把 `output_format` 设为 `html` 则返回清理后的 HTML。
 
 这是一个**实现型**插件：它只向 `ctx.web` 注册提供方，**不**注册面向模型的工具。`web_fetch`
 由 `@deepseek-ai/dsh-tool-web` 拥有（它的 schema、提示词和结果卡片），安装本插件就是让那个
@@ -59,6 +60,7 @@ node scripts/link-harness-deps.mjs
 | **验证 Header 名称** | 例如 `Authorization` 或 `X-API-Key`。留空则不带验证请求头。 |
 | **验证 Header 值** | 作为该请求头的值发送。界面以掩码显示；**留空则不带验证请求头** —— 名称与值必须成对生效。 |
 | **抓取方式** | 一次抓取走哪个端点：`/crawl/stream`、`/crawl` 或 `/md`。默认 `/crawl/stream`。 |
+| **输出格式** | 两个 crawl 端点交出哪一份内容：`Markdown`（默认）或 `HTML 原文`。 |
 
 两个请求头字段彼此独立，因此任何请求头名称、或者完全不带验证，都能工作。
 
@@ -81,8 +83,8 @@ node scripts/link-harness-deps.mjs
 
 | 方式 | 端点 | 参数 |
 |---|---|---|
-| `crawl_stream`（默认） | `POST /crawl/stream` | `content_source`、`only_text` |
-| `crawl` | `POST /crawl` | `content_source`、`only_text` |
+| `crawl_stream`（默认） | `POST /crawl/stream` | `content_source`、`only_text`、`output_format` |
+| `crawl` | `POST /crawl` | `content_source`、`only_text`、`output_format` |
 | `md` | `POST /md` | `f` |
 
 `content_source` 与 `only_text` 配置的是
@@ -91,12 +93,29 @@ node scripts/link-harness-deps.mjs
 `crawler_config.markdown_generator = {"type": "DefaultMarkdownGenerator", "params": {"content_source": …}}`
 里。若当作顶层键发送，会被服务端自己的字段白名单静默丢弃。
 
+`output_format` 则**完全不发给服务端**：一次 crawl 的结果
+[同时带着两份内容](https://docs.crawl4ai.com/api/crawl-result/) —— `html` / `cleaned_html` 与
+`markdown` 对象 —— 所以这个字段是对**答案**做投影，而不是请求选项。选 `html` 时返回
+`cleaned_html`（缺失时回退到原始的 `html`），即已剥掉脚本与样式的清理后页面。`content_source`
+不参与这个选择 —— 它配置的是 Markdown **生成器**，所以从 `raw_html` 生成 Markdown 的行，要
+HTML 时拿到的仍是清理后的 DOM。
+
 | 键 | 可选值 | 默认 | 含义 |
 |---|---|---|---|
 | `fetchMode` | `crawl_stream`、`crawl`、`md` | `crawl_stream` | 端点选择。 |
 | `content_source` | `cleaned_html`、`raw_html`、`fit_html` | `cleaned_html` | 生成 Markdown 所使用的 HTML 来源。 |
 | `only_text` | `true`、`false` | `false` | 只提取纯文本内容。 |
+| `output_format` | `markdown`、`html` | `markdown` | 同一次 crawl 结果交出哪种呈现。 |
 | `f` | `fit`、`raw` | `fit` | `/md` 使用的内容过滤方式。Crawl4AI 还提供 `bm25` 与 `llm`，本插件不开放：它们需要一个查询或一份 LLM 配置，而接缝的请求结构没有地方放。 |
+
+两种呈现会互相回退而不是报错：只保留其中一份的结果同样算抓取成功 —— 对着配了 `only_text`
+（完全不保留 HTML）的服务端要 `html`，会得到它确实产出的那份 Markdown；反之要 `markdown`
+而结果没有 Markdown 时，会得到它的 HTML。`/md` 只产出 Markdown，所以该方式下 `output_format`
+无从选择，会被忽略。
+
+选择 HTML 之后有一点需要知道：接缝的正文类型只有 `html` 与 `text`，而本插件始终按 `text`
+交出。这是刻意的 —— 若报告 `html`，`dsh-tool-web` 会把正文再过一遍 turndown，模型看到的又
+变回 Markdown，且用的是与配置项不同的转换器。
 
 两个 crawl 端点都会带回目标页面自身的状态码与最终地址；`/md` 两者都不带，这也是优先选它们的
 主要理由。
@@ -126,9 +145,10 @@ bundle patch 会设置 `web.fetchProvider: ben-crawl4ai`，这不是客套：
   若失败发生在流**已经打开之后**，它不会以 HTTP 状态返回，而是以一条
   `{"status": "error", …}` 行进带送达，此时按抓取失败如实上报。
 - **`/crawl`** 应答 `{ success, results: [ … ] }`；取第一条结果的最终地址（优先
-  `redirected_url`，其次 `url`）、目标自身的 `status_code`，以及它的 `markdown` 对象 —— 其中
-  优先 `fit_markdown`，而当 `fit_markdown` 为**空字符串**时回退到 `raw_markdown`（未请求 fit
-  过滤时服务端就返回 `fit_markdown: ""`）。
+  `redirected_url`，其次 `url`）、目标自身的 `status_code`，以及正文：`markdown` 对象（优先
+  `fit_markdown`，而当 `fit_markdown` 为**空字符串**时回退到 `raw_markdown` —— 未请求 fit
+  过滤时服务端就返回 `fit_markdown: ""`），或者在 `output_format: html` 时取 `cleaned_html`
+  （其次 `html`）。
 - **`/md`** 应答 `{ url, filter, markdown, success }`，`filter` 即传入的 `f`。它不带目标状态
   码，所以一次成功转换按构造就是 200。
 
@@ -159,9 +179,9 @@ bundle patch 会设置 `web.fetchProvider: ben-crawl4ai`，这不是客套：
 node --test test/crawl4ai.test.mjs test/config.test.mjs test/client.test.mjs   # 离线
 ```
 
-`crawl4ai.test.mjs` 用桩 `fetch` 覆盖三个端点各自的 HTTP 契约与映射。`config.test.mjs` 覆盖
-schema：每个字段都是 volatile、每个可选值都被接受而未知值被拒绝、未设置的字段回落到 Crawl4AI
-自身的默认值。`client.test.mjs` 用桩模块加载器执行浏览器端 bundle，因此多余的
+`crawl4ai.test.mjs` 用桩 `fetch` 覆盖三个端点各自的 HTTP 契约与映射，含两种输出格式。`config.test.mjs` 覆盖
+schema：每个字段都是 volatile、每个可选值都被接受而未知值被拒绝、未设置的字段回落到各自文档中
+的默认值。`client.test.mjs` 用桩模块加载器执行浏览器端 bundle，因此多余的
 `@deepseek-ai/*` 导入、写错的组件名、或与插入行不一致的 slot key 都会在这里失败，而不是弄坏
 整个 Web UI；它同时把浏览器端的可选值清单钉在宿主 schema 上，以免只改一侧就发布出去。
 
@@ -184,10 +204,14 @@ node --test test/crawl4ai.test.mjs      # 含每种抓取方式各一次真实�
 
 ## 已知限制
 
-- **只返回 Markdown。** 接缝的正文类型只有 `html` 与 `text`；本提供方始终返回 `text`，于是
-  `dsh-tool-web` 的 HTML→Markdown 那一步被跳过了，而不是被重复执行。
+- **默认 Markdown，可按需给 HTML。** 接缝的正文类型只有 `html` 与 `text`；本提供方始终返回
+  `text`，于是 `dsh-tool-web` 的 HTML→Markdown 那一步被跳过了，而不是被重复执行。`output_format:
+  html` 时同样如此 —— 这正是模型能直接看到标签的原因。
+- **`/md` 给不了 HTML。** 该端点只产出 Markdown，因此 `output_format` 在它上面被忽略；需要 HTML
+  时请选两个 crawl 端点之一。
 - **只开放了 `crawler_config` 的一小块。** 仅暴露 `content_source` 与 `only_text`：扫描深度、
   缓存、其他过滤方式、截图都是 Crawl4AI 的能力，而接缝的请求结构没有地方放它们。
+  （`output_format` 不属于这一块 —— 它描述的是答案。）
 - **页面缓存由 Crawl4AI 服务端掌握。** `cache` 保持默认，因此重复抓取可能命中服务端缓存。
 - **`/md` 丢失目标状态码。** 该方式下成功转换一律按 HTTP 200 报告。
 - **端点之间不回退。** 选定端点即是一种承诺：服务端不提供该端点时会如实返回它自己的 404/405，

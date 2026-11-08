@@ -4,8 +4,9 @@ A [Crawl4AI](https://github.com/unclecode/crawl4ai)-backed `WebFetchProvider` fo
 [DeepSeek Harness](https://github.com/deepseek-ai) web capability seam (`ctx.web`).
 
 Crawl4AI drives a real browser, so a page that a plain HTTP fetch sees as an empty
-`<div id="app">` arrives here as rendered Markdown — including the code blocks, tables, and
-lazily-loaded text that only exist after JavaScript runs.
+`<div id="app">` arrives here as rendered content — including the code blocks, tables, and
+lazily-loaded text that only exist after JavaScript runs. It is returned as Markdown by default;
+set `output_format: html` to get the cleaned HTML instead.
 
 This is an **implementation** package: it registers a provider into `ctx.web` and does **not**
 register a model-facing tool. `@deepseek-ai/dsh-tool-web` owns `web_fetch` — its schema, its
@@ -63,6 +64,7 @@ stages what you type and writes only on **Save**, through the shell's own settin
 | **Auth header name** | e.g. `Authorization` or `X-API-Key`. Blank sends no authenticating header. |
 | **Auth header value** | Sent as that header's value. Rendered masked; **blank sends no authenticating header** — the name and the value take effect together. |
 | **Fetch mode** | Which endpoint one fetch uses: `/crawl/stream`, `/crawl`, or `/md`. Defaults to `/crawl/stream`. |
+| **Output format** | What the two crawl endpoints hand back: `Markdown` (default) or `Raw HTML`. |
 
 Both header fields are independent, so a deployment can use any header name or none at all.
 
@@ -88,8 +90,8 @@ switching back and forth does not discard a choice.
 
 | Mode | Endpoint | Options |
 |---|---|---|
-| `crawl_stream` (default) | `POST /crawl/stream` | `content_source`, `only_text` |
-| `crawl` | `POST /crawl` | `content_source`, `only_text` |
+| `crawl_stream` (default) | `POST /crawl/stream` | `content_source`, `only_text`, `output_format` |
+| `crawl` | `POST /crawl` | `content_source`, `only_text`, `output_format` |
 | `md` | `POST /md` | `f` |
 
 `content_source` and `only_text` configure
@@ -99,12 +101,32 @@ generator, so it is sent nested as
 `crawler_config.markdown_generator = {"type": "DefaultMarkdownGenerator", "params": {"content_source": …}}`.
 Sending it as a top-level key would be silently dropped by the server's own field allowlist.
 
+`output_format` is **not sent to the server at all**. A crawl result
+[carries the page both ways](https://docs.crawl4ai.com/api/crawl-result/) — `html` /
+`cleaned_html` and the `markdown` object — so this field is a projection applied to the answer,
+not a request option. `html` returns `cleaned_html` (falling back to `html`, the original DOM):
+the sanitized page, with scripts and styles already stripped. `content_source` does not steer
+this choice — it configures the Markdown **generator**, so a row generating from `raw_html` still
+receives the cleaned DOM when it asks for HTML.
+
 | Key | Choices | Default | Meaning |
 |---|---|---|---|
 | `fetchMode` | `crawl_stream`, `crawl`, `md` | `crawl_stream` | Endpoint selection. |
 | `content_source` | `cleaned_html`, `raw_html`, `fit_html` | `cleaned_html` | The HTML the Markdown is generated from. |
 | `only_text` | `true`, `false` | `false` | Extract text-only content. |
+| `output_format` | `markdown`, `html` | `markdown` | Which rendering of the same crawl result is returned. |
 | `f` | `fit`, `raw` | `fit` | The content filter `/md` applies. Crawl4AI also serves `bm25` and `llm`, which this plugin does not offer because they need a query or an LLM configuration this seam's request shape has nowhere to put. |
+
+The two projections fall back to each other rather than failing, because a result that kept only
+one of them has still been retrieved successfully: `output_format: html` against a server
+configured with `only_text` (which keeps no HTML) yields the Markdown it did produce, and
+`markdown` against a result with no Markdown yields its HTML. `/md` answers Markdown only, so
+`output_format` has nothing to select on that mode and is ignored.
+
+One consequence of asking for HTML: the seam's body kinds are `html` and `text`, and this
+plugin keeps reporting `text`. That is deliberate — reporting `html` would make `dsh-tool-web`
+run the result through turndown, so the model would see Markdown again, converted by a different
+generator than the one the row is configured for.
 
 Both crawl endpoints report the target's own status code and its final URL; `/md` reports
 neither, which is the main reason to prefer them.
@@ -136,9 +158,10 @@ the row selected. The two crawl endpoints share a body — `{"urls": ["<url>"], 
   `{"status": "error", …}` line rather than as an HTTP status, and is reported as the crawl
   failure it is.
 - **`/crawl`** answers `{ success, results: [ … ] }`, and the first result supplies the final URL
-  (`redirected_url` over `url`), the target's own `status_code`, and its `markdown` object, from
-  which `fit_markdown` is preferred and an **empty** `fit_markdown` falls through to
-  `raw_markdown` (the server returns `fit_markdown: ""` unless a fit filter was requested).
+  (`redirected_url` over `url`), the target's own `status_code`, and the body content: the
+  `markdown` object (`fit_markdown` preferred, an **empty** `fit_markdown` falling through to
+  `raw_markdown`, since the server returns `fit_markdown: ""` unless a fit filter was requested)
+  or, with `output_format: html`, `cleaned_html` over `html`.
 - **`/md`** answers `{ url, filter, markdown, success }` for the `f` it was given. It reports no
   target status, so a successful conversion is a 200 by construction.
 
@@ -173,13 +196,13 @@ node --test test/crawl4ai.test.mjs test/config.test.mjs test/client.test.mjs   #
 ```
 
 `crawl4ai.test.mjs` covers the HTTP contract and mapping against a stubbed `fetch`, for all three
-endpoints. `config.test.mjs` covers the schema: that every field is volatile, that each choice is
-accepted and an unknown one refused, and that an unset field resolves to Crawl4AI's own default.
-`client.test.mjs` evaluates the browser bundle with the module loader stubbed, so a stray
-`@deepseek-ai/*` import, an unknown primitive name, or a slot key that does not match the
-inserted row fails the suite instead of breaking the Web UI. It also pins the browser half's
-option lists to the host schema's, which is what keeps a choice added on one side alone from
-shipping.
+endpoints, including both projected output formats. `config.test.mjs` covers the schema: that
+every field is volatile, that each choice is accepted and an unknown one refused, and that an
+unset field resolves to its documented default. `client.test.mjs` evaluates the browser bundle
+with the module loader stubbed, so a stray `@deepseek-ai/*` import, an unknown primitive name, or
+a slot key that does not match the inserted row fails the suite instead of breaking the Web UI.
+It also pins the browser half's option lists to the host schema's, which is what keeps a choice
+added on one side alone from shipping.
 
 Two suites need a live server and skip without one:
 
@@ -201,11 +224,15 @@ skips itself rather than failing when that has not been run.
 
 ## Known limitations
 
-- **Markdown only.** The seam's body kinds are `html` and `text`; this provider always returns
-  `text`, so `dsh-tool-web`'s HTML-to-Markdown step is skipped rather than applied twice.
+- **Markdown by default, HTML on request.** The seam's body kinds are `html` and `text`; this
+  provider always returns `text`, so `dsh-tool-web`'s HTML-to-Markdown step is skipped rather
+  than applied twice. That holds for `output_format: html` too, which is what makes the model
+  see the markup itself.
+- **`/md` cannot return HTML.** That endpoint produces Markdown alone, so `output_format` is
+  ignored there; pick one of the two crawl endpoints if you need the HTML.
 - **A small slice of `crawler_config`.** Only `content_source` and `only_text` are exposed; scan
   depth, caching, other filters, and screenshots are Crawl4AI features this seam's request shape
-  has nowhere to put.
+  has nowhere to put. (`output_format` is not part of that slice — it describes the answer.)
 - **The Crawl4AI server holds the page cache.** `cache` is left at its default, so a repeat fetch
   may answer from the server's cache.
 - **`/md` loses the target's status.** On that mode a successful conversion is reported as
